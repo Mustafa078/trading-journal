@@ -186,6 +186,12 @@ input::placeholder,textarea::placeholder{color:var(--text3)}
 .tag-pill{font-size:11px;padding:3px 9px;border-radius:99px;font-weight:500}
 .tp-setup{background:var(--accent-dim);color:var(--accent)}
 .tp-mistake{background:var(--yellow-dim);color:var(--yellow)}
+.partial-row{display:flex;align-items:center;justify-content:space-between;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;font-size:12px}
+.partial-row .pr-info{display:flex;gap:14px;font-family:var(--mono)}
+.partial-row .pr-pnl.pos{color:var(--green)}
+.partial-row .pr-pnl.neg{color:var(--red)}
+.partial-row button{background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px}
+.partial-row button:hover{color:var(--red)}
 
 /* Toast */
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--bg3);border:1px solid var(--border2);border-radius:99px;padding:10px 20px;font-size:13px;color:var(--text);z-index:200;opacity:0;pointer-events:none;transition:opacity .25s;white-space:nowrap}
@@ -496,13 +502,26 @@ input::placeholder,textarea::placeholder{color:var(--text3)}
     </div>
     <div class="modal-grid" id="close-summary"></div>
     <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
-    <div class="modal-sub">Close this trade</div>
+
+    <!-- Partial Profits -->
+    <div class="modal-sub">Partial profits <span style="font-weight:400;color:var(--text3);font-size:12px">(log exits along the way, optional)</span></div>
+    <div id="partials-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end">
+      <div class="form-group"><label>% closed</label><input type="number" id="partial-pct" placeholder="e.g. 50" min="1" max="100" step="any"></div>
+      <div class="form-group"><label>Exit price</label><input type="number" id="partial-price" placeholder="0.00" step="any"></div>
+      <div class="form-group"><label>P&amp;L ($)</label><input type="number" id="partial-pnl" placeholder="+5.00" step="any"></div>
+      <button class="cancel-btn" style="padding:9px 14px" onclick="addPartial()">+ Add</button>
+    </div>
+    <div class="hint" id="partial-remaining-hint" style="margin-top:6px"></div>
+
+    <hr style="border:none;border-top:1px solid var(--border);margin:18px 0">
+    <div class="modal-sub">Close remaining position</div>
     <div class="result-btns" id="close-result-btns">
       <div class="result-btn" data-val="Win" data-cls="win">✅ Win</div>
       <div class="result-btn" data-val="Loss" data-cls="loss">❌ Loss</div>
       <div class="result-btn" data-val="Breakeven" data-cls="be">⚖️ Breakeven</div>
     </div>
-    <div class="form-group" style="margin-top:14px"><label>P&amp;L ($)</label>
+    <div class="form-group" style="margin-top:14px"><label>Final P&amp;L ($) <span style="font-weight:400;color:var(--text3)">— for the remaining % only</span></label>
       <input type="number" id="close-pnl" placeholder="+15.00 or −8.50" step="any">
     </div>
     <div style="margin-top:14px">
@@ -529,6 +548,33 @@ input::placeholder,textarea::placeholder{color:var(--text3)}
   </div>
 </div>
 
+<!-- Partial Profit Modal -->
+<div class="overlay" id="partial-overlay" onclick="if(event.target===this)closePartialModal()">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="partial-title">Take partial profit</div>
+      <button class="close-btn" onclick="closePartialModal()">×</button>
+    </div>
+    <div class="modal-grid" id="partial-summary"></div>
+    <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+    <div class="modal-sub">Log this partial close</div>
+    <div class="form-grid">
+      <div class="form-group"><label>% of position closed</label>
+        <input type="number" id="partial-pct" placeholder="e.g. 50" min="1" max="100" step="any">
+      </div>
+      <div class="form-group"><label>P&amp;L from this portion ($)</label>
+        <input type="number" id="partial-pnl" placeholder="+8.00" step="any">
+      </div>
+    </div>
+    <div class="form-group" style="margin-top:10px"><label>Note (optional)</label>
+      <input type="text" id="partial-note" placeholder="e.g. Took 50% at TP1, letting rest ride">
+    </div>
+    <button class="add-btn" style="margin-top:14px" onclick="confirmPartial()">+ Add partial close</button>
+
+    <div id="partial-history" style="margin-top:18px"></div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
@@ -538,7 +584,7 @@ let trades = JSON.parse(localStorage.getItem('tj_trades')||'[]');
 let selectedEmotion='', selectedResult='', selectedSetups=[], selectedMistakes=[];
 let currentFilter='All', searchQuery='', editMode=false, editingId=null;
 let formScreenshot=null;
-let closingTradeId=null, closeSelectedResult='', closeSelectedMistakes=[];
+let closingTradeId=null, closeSelectedResult='', closeSelectedMistakes=[], closePartials=[];
 let chartInstances={};
 
 /* ── Setup ── */
@@ -816,7 +862,11 @@ function checkLossAlert(streak){
 }
 
 function currentBalance(){return parseFloat(localStorage.getItem('tj_balance')||0)+calcNetPnl();}
-function calcNetPnl(){return trades.filter(t=>t.result!=='Open'&&t.pnl!==''&&t.pnl!=null).reduce((s,t)=>s+parseFloat(t.pnl||0),0);}
+function calcNetPnl(){
+  const closedPnl=trades.filter(t=>t.result!=='Open'&&t.pnl!==''&&t.pnl!=null).reduce((s,t)=>s+parseFloat(t.pnl||0),0);
+  const partialsPnl=trades.reduce((s,t)=>s+calcPartialsPnl(t),0);
+  return closedPnl+partialsPnl;
+}
 function calcStreak(){
   const c=trades.filter(t=>t.result!=='Open');if(!c.length)return{count:0,type:null};
   const type=c[0].result==='Win'?'W':c[0].result==='Loss'?'L':'BE';
@@ -848,6 +898,8 @@ function renderList(){
     const pnlStr=(!isOpen&&t.pnl!==''&&t.pnl!=null)?((parseFloat(t.pnl)>=0?'+':'')+parseFloat(t.pnl).toFixed(2)):'';
     const warnDot=t.mistakes&&t.mistakes.length?'<span style="display:inline-block;width:6px;height:6px;background:var(--yellow);border-radius:50%;margin-left:4px;vertical-align:middle" title="Has mistakes"></span>':'';
     const camIcon=t.screenshot?'<span style="font-size:10px;color:var(--accent);margin-left:3px" title="Has screenshot">📷</span>':'';
+    const partialsTotal=calcPartialsPnl(t);
+    const partialBadge=(t.partials&&t.partials.length)?`<span style="font-size:10px;color:var(--green);margin-left:3px" title="${t.partials.length} partial(s) taken">💰${t.partials.reduce((s,p)=>s+parseFloat(p.pct||0),0)}%</span>`:'';
     row.innerHTML=`
       <div><div class="trade-date">${formatDate(t.date)}</div></div>
       <div style="display:flex;align-items:flex-start;gap:3px">
@@ -857,6 +909,7 @@ function renderList(){
       <div class="trade-reason" title="${escHtml(t.reason)}">${escHtml(t.reason)}</div>
       <div><div class="trade-result" style="color:${rc}">${t.result}</div><div class="trade-sub">${pnlStr?'$'+pnlStr:t.rr||'—'}</div></div>
       <div class="trade-actions">
+        ${isOpen?`<button class="icon-btn" title="Take partial profit" style="color:var(--green)" onclick="handlePartialClick(event,${t.id})">💰</button>`:''}
         <button class="icon-btn edit" title="Edit" onclick="handleEditClick(event,${t.id})">✏</button>
         <button class="icon-btn del" title="Delete" onclick="deleteTrade(event,${t.id})">×</button>
       </div>`;
@@ -865,6 +918,67 @@ function renderList(){
   });
 }
 function handleEditClick(e,id){e.stopPropagation();openEditMode(id);}
+
+/* ── Partial Profit ── */
+let partialTradeId=null;
+function handlePartialClick(e,id){e.stopPropagation();openPartialModal(id);}
+function openPartialModal(id){
+  const t=trades.find(t=>t.id===id);if(!t)return;
+  partialTradeId=id;
+  if(!t.partials)t.partials=[];
+  const closedPct=t.partials.reduce((s,p)=>s+parseFloat(p.pct||0),0);
+  const remaining=100-closedPct;
+  document.getElementById('partial-title').textContent=t.pair+' · Partial profit';
+  document.getElementById('partial-summary').innerHTML=`
+    <div class="modal-field"><div class="field-label">Pair</div><div class="field-value mono">${escHtml(t.pair)}</div></div>
+    <div class="modal-field"><div class="field-label">Direction</div><div class="field-value">${t.dir} · ${t.tf}</div></div>
+    <div class="modal-field"><div class="field-label">Entry</div><div class="field-value mono">${t.entry||'—'}</div></div>
+    <div class="modal-field"><div class="field-label">Remaining position</div><div class="field-value mono" style="color:var(--accent)">${remaining}%</div></div>`;
+  document.getElementById('partial-pct').value='';
+  document.getElementById('partial-pct').max=remaining;
+  document.getElementById('partial-pnl').value='';
+  document.getElementById('partial-note').value='';
+  renderPartialHistory(t);
+  document.getElementById('partial-overlay').classList.add('open');
+}
+function renderPartialHistory(t){
+  const el=document.getElementById('partial-history');
+  if(!t.partials||!t.partials.length){el.innerHTML='';return;}
+  el.innerHTML='<div class="modal-sub" style="margin-top:0">Partials taken so far</div>'+
+    t.partials.map((p,i)=>`
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">
+        <div>
+          <span style="font-weight:600;color:var(--accent)">${p.pct}%</span> closed
+          ${p.note?`<span style="color:var(--text3)"> — ${escHtml(p.note)}</span>`:''}
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-family:var(--mono);font-weight:600;color:${parseFloat(p.pnl)>=0?'var(--green)':'var(--red)'}">${parseFloat(p.pnl)>=0?'+':''}$${parseFloat(p.pnl).toFixed(2)}</span>
+          <button class="icon-btn del" style="padding:2px" onclick="deletePartial(${i})">×</button>
+        </div>
+      </div>`).join('');
+}
+function deletePartial(idx){
+  const t=trades.find(t=>t.id===partialTradeId);if(!t)return;
+  t.partials.splice(idx,1);save();renderAll();openPartialModal(partialTradeId);
+}
+function closePartialModal(){document.getElementById('partial-overlay').classList.remove('open');partialTradeId=null;}
+function confirmPartial(){
+  const t=trades.find(t=>t.id===partialTradeId);if(!t)return;
+  const pct=parseFloat(document.getElementById('partial-pct').value);
+  const pnl=document.getElementById('partial-pnl').value;
+  if(!pct||pct<=0){toast('Enter a valid % closed.');return;}
+  if(pnl===''||pnl==null){toast('Enter the P&L for this portion.');return;}
+  if(!t.partials)t.partials=[];
+  const closedPct=t.partials.reduce((s,p)=>s+parseFloat(p.pct||0),0);
+  if(closedPct+pct>100){toast('Total partials cannot exceed 100% of position.');return;}
+  t.partials.push({pct,pnl,note:document.getElementById('partial-note').value.trim(),date:new Date().toISOString().split('T')[0]});
+  save();renderAll();
+  toast('Partial profit logged ✓');
+  openPartialModal(partialTradeId);
+}
+function calcPartialsPnl(t){
+  return (t.partials||[]).reduce((s,p)=>s+parseFloat(p.pnl||0),0);
+}
 
 /* ── Detail Modal ── */
 function openModal(t){
@@ -875,6 +989,7 @@ function openModal(t){
   const setupPills=(t.setups&&t.setups.length)?`<div class="modal-field mf-full"><div class="field-label">Setups</div><div class="tag-pills">${t.setups.map(s=>`<span class="tag-pill tp-setup">${escHtml(s)}</span>`).join('')}</div></div>`:'';
   const mistakePills=(t.mistakes&&t.mistakes.length)?`<div class="modal-field mf-full"><div class="field-label">⚠ Mistakes</div><div class="tag-pills">${t.mistakes.map(m=>`<span class="tag-pill tp-mistake">${escHtml(m)}</span>`).join('')}</div></div>`:'';
   const ssLine=t.screenshot?`<div class="modal-field mf-full"><div class="field-label">Chart screenshot</div><img src="${t.screenshot}" onclick="window.open(this.src,'_blank')" style="width:100%;border-radius:8px;margin-top:6px;cursor:zoom-in;border:1px solid var(--border)"></div>`:'';
+  const partialsLine=(t.partials&&t.partials.length)?`<div class="modal-field mf-full"><div class="field-label">Partial exits</div><div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">${t.partials.map(p=>`<div class="partial-row"><div class="pr-info"><span>${p.pct}% closed</span>${p.price?`<span>@ ${p.price}</span>`:''}<span class="pr-pnl ${p.pnl>=0?'pos':'neg'}">${p.pnl>=0?'+':''}$${parseFloat(p.pnl).toFixed(2)}</span></div></div>`).join('')}</div></div>`:'';
   document.getElementById('detail-title').textContent=t.pair+' · '+formatDate(t.date);
   document.getElementById('detail-body').innerHTML=`
     <div class="modal-field"><div class="field-label">Direction</div><div class="field-value">${t.dir} · ${t.tf}</div></div>
@@ -889,6 +1004,7 @@ function openModal(t){
     <div class="modal-field mf-full"><div class="field-label">Entry reason</div><div class="field-value" style="font-weight:400;line-height:1.6;margin-top:4px">${escHtml(t.reason)}</div></div>
     ${mistakePills}
     ${t.lesson?`<div class="modal-field mf-full"><div class="field-label">Lesson</div><div class="field-value" style="font-weight:400;line-height:1.6;margin-top:4px">${escHtml(t.lesson)}</div></div>`:''}
+    ${partialsLine}
     ${ssLine}`;
   document.getElementById('detail-overlay').classList.add('open');
 }
@@ -896,7 +1012,11 @@ function closeDetailModal(){document.getElementById('detail-overlay').classList.
 
 /* ── Close-trade modal ── */
 function openCloseModal(t){
-  closingTradeId=t.id;closeSelectedResult='';closeSelectedMistakes=[];
+  closingTradeId=t.id;closeSelectedResult='';closeSelectedMistakes=[];closePartials=[];
+  document.getElementById('partial-pct').value='';
+  document.getElementById('partial-price').value='';
+  document.getElementById('partial-pnl').value='';
+  renderPartials();
   document.getElementById('close-title').textContent=t.pair+' · Close trade';
   document.getElementById('close-summary').innerHTML=`
     <div class="modal-field"><div class="field-label">Pair</div><div class="field-value mono">${escHtml(t.pair)}</div></div>
@@ -916,7 +1036,39 @@ function openCloseModal(t){
   updateTagCount('close-mistake-count',closeSelectedMistakes.length);
   document.getElementById('close-overlay').classList.add('open');
 }
-function closeCloseModal(){document.getElementById('close-overlay').classList.remove('open');closingTradeId=null;closeSelectedResult='';closeSelectedMistakes=[];}
+function addPartial(){
+  const pct=parseFloat(document.getElementById('partial-pct').value);
+  const price=document.getElementById('partial-price').value;
+  const pnl=document.getElementById('partial-pnl').value;
+  if(!pct||pct<=0){toast('Enter a valid % closed.');return;}
+  if(pnl===''||pnl==null){toast('Enter the P&L for this partial.');return;}
+  const usedPct=closePartials.reduce((s,p)=>s+p.pct,0);
+  if(usedPct+pct>100){toast('Total % closed cannot exceed 100%.');return;}
+  closePartials.push({pct,price,pnl:parseFloat(pnl)});
+  document.getElementById('partial-pct').value='';
+  document.getElementById('partial-price').value='';
+  document.getElementById('partial-pnl').value='';
+  renderPartials();
+}
+function removePartial(i){closePartials.splice(i,1);renderPartials();}
+function renderPartials(){
+  const list=document.getElementById('partials-list');
+  if(!closePartials.length){list.innerHTML='';}
+  else{
+    list.innerHTML=closePartials.map((p,i)=>{
+      const cls=p.pnl>=0?'pos':'neg';
+      return `<div class="partial-row">
+        <div class="pr-info"><span>${p.pct}% closed</span>${p.price?`<span>@ ${p.price}</span>`:''}<span class="pr-pnl ${cls}">${p.pnl>=0?'+':''}$${p.pnl.toFixed(2)}</span></div>
+        <button onclick="removePartial(${i})" title="Remove">×</button>
+      </div>`;
+    }).join('');
+  }
+  const usedPct=closePartials.reduce((s,p)=>s+p.pct,0);
+  const remaining=100-usedPct;
+  const hint=document.getElementById('partial-remaining-hint');
+  hint.textContent = closePartials.length ? remaining+'% of position remaining to close' : '';
+}
+
 document.getElementById('close-result-btns').addEventListener('click',function(e){
   const btn=e.target.closest('.result-btn');if(!btn)return;
   document.querySelectorAll('#close-result-btns .result-btn').forEach(b=>b.classList.remove('win','loss','be'));
@@ -925,8 +1077,12 @@ document.getElementById('close-result-btns').addEventListener('click',function(e
 function confirmCloseTrade(){
   if(!closeSelectedResult){toast('Select a result.');return;}
   const idx=trades.findIndex(t=>t.id===closingTradeId);if(idx===-1)return;
+  const finalPnl=parseFloat(document.getElementById('close-pnl').value)||0;
+  const partialsPnl=closePartials.reduce((s,p)=>s+p.pnl,0);
+  const totalPnl=finalPnl+partialsPnl;
   trades[idx].result=closeSelectedResult;
-  trades[idx].pnl=document.getElementById('close-pnl').value;
+  trades[idx].partials=[...closePartials];
+  trades[idx].pnl=(closePartials.length||document.getElementById('close-pnl').value!=='')?totalPnl.toFixed(2):'';
   trades[idx].mistakes=[...closeSelectedMistakes];
   trades[idx].lesson=document.getElementById('close-lesson').value.trim();
   save();renderAll();closeCloseModal();toast('Trade closed ✓');
